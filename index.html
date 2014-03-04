@@ -1,0 +1,556 @@
+<!DOCTYPE html>
+<html>
+<head>
+
+<link rel="stylesheet" href="http://ajax.googleapis.com/ajax/libs/jqueryui/1.10.4/themes/smoothness/jquery-ui.css" />
+<link rel="stylesheet" href="http://thlorenz.github.io/d3-gauge/example/index.css"/>
+
+<style>
+  #updateInterval {
+  	font-size: 14px;
+  	text-align: center;
+  }
+  
+  #updateInterval .slider {
+    width: 300px;
+    display: inline-block;
+    margin-left: 15px;
+    margin-right: 15px;
+  }
+  
+  .ui-draggable {
+    cursor: context-menu;
+  }
+  
+  .visIcon {
+    padding: 3px;
+  }
+  
+  .instruction {
+  	font-style: italic;
+  	font-size: 14px;
+  	/*width: 400px;*/
+  }
+  
+  #visualizations {
+    background-color: lightgray;
+    background-image: none;
+  }
+  
+  .visualization {
+  	display: inline-block;
+  	border: 2px solid gray;
+  }
+  
+  .visualization .ui-icon-circle-close {
+    z-index: 90;
+    position: absolute;
+    top: 0;
+    right: 0;
+    display: none;
+  }
+  
+  .visualization:hover .ui-icon-circle-close {
+    display: inline-block;
+  }
+  
+  .visualization .ui-resizable-handle {
+    display: none;
+  }
+  
+  .visualization:hover .ui-resizable-handle {
+    display: block;
+  }
+  
+  .visualization.linearTrace, .visualization.rosling {
+    background-color: white;
+  }
+  
+  .visualization.linearTrace svg, .visualization.rosling svg {
+    font: 10px sans-serif;
+  }
+ 
+  .visualization.linearTrace .line, .visualization.rosling .line {
+    fill: none;
+    stroke: #000;
+    stroke-width: 1.5px;
+  }
+ 
+  .visualization.linearTrace .axis path,
+  .visualization.linearTrace .axis line,
+  .visualization.rosling .axis path,
+  .visualization.rosling .axis line
+  {
+    fill: none;
+    stroke: #000;
+    shape-rendering: crispEdges;
+  }
+  
+  .tooltip {
+    position: absolute;
+    pointer-events: none;
+    background-color: #FFFFCC;
+    border: 1px solid gray;
+    padding: 2px;
+  }
+  
+  #configDialog {
+  	display:none;
+  }
+  
+  #configDialog table th {
+  	text-align: right;
+  }
+  
+</style>
+
+<script src="scripts/vendor/json2.js"></script>
+<script src="scripts/vendor/underscore-min.js"></script>
+<script src="scripts/vendor/backbone-min.js"></script>
+<script src="http://code.jquery.com/jquery-1.11.0.min.js"></script>
+<script src="http://code.jquery.com/ui/1.10.4/jquery-ui.min.js"></script>
+<script src="http://d3js.org/d3.v3.min.js" charset="utf-8"></script>
+
+<script src="scripts/gauge.js"></script>
+<script src="scripts/linearTrace.js"></script>
+<script src="scripts/rosling.js"></script>
+
+</head>
+<body>
+<!-- 
+<div id="updateInterval">
+  <span>Data Update Interval: </span>
+  <div class="slider"></div>
+  <span class="value"></span> seconds
+</div>
+ -->
+<div id="visSelector" class="ui-widget ui-widget-header ui-corner-all">
+  <table>
+    <tr>
+      <!-- <td>Drag and drop visualizations:</td> -->
+      <td style="white-space:nowrap;">
+      	<img class="visIcon gauge" src="img/gauge32.png" title="Gauge"/>
+      	<img class="visIcon linearTrace" src="img/lineTrace32.png" title="Line Trace"/>
+      	<img class="visIcon rosling" src="img/rosling32.png" title="Rosling Plot"/>
+      </td>
+      <td class="instruction">&lt;-- Drag and drop visualizations into the canvas below. Double-click a visualization to re-configure it.</td>
+      <td>
+		<div id="updateInterval">
+		  <span>Data Update Interval: </span><br/>
+		  <div class="slider"></div><br/>
+		  <span class="value"></span> seconds
+		</div>
+      </td>
+    </tr>
+  </table>
+</div>
+<div id="visualizations" class="ui-widget ui-widget-content ui-corner-all">
+</div>
+<div id="configDialog">
+	<fieldset class="ui-corner-all">
+		<legend>Categories</legend>
+		<table></table>
+	</fieldset>
+	<p>
+</div>
+
+<script>
+
+//Metadata for the data being generated
+var metaData = {
+	categories: {
+		'c1': {id: 'c1', label: 'Color', values: ['red', 'green', 'blue']},
+		'c2': {id: 'c2', label: 'Animal', values: ['dog', 'cat', 'fish']},
+	    'c3': {id: 'c3', label:'Number', values: ['one', 'two', 'three']}
+	},
+	metrics: {
+		'm1' : {id: 'm1', label: "Metric 1", min:0, max:100},
+		'm2' : {id: 'm2', label: "Metric 2", min:0, max:100},
+		'm3' : {id: 'm3', label: "Metric 3", min:0, max:100}
+	}
+};
+
+// The global collection that houses all of the current values
+var currentValues = new Backbone.Collection();
+
+//------------- Data generation ---------------
+var categoryIds = _.keys(metaData.categories);
+
+//Updates all values
+function updateValues(categoryIndex, obj){
+	categoryIndex = categoryIndex || 0;
+	obj = obj || {};
+	
+	var categoryId = categoryIds[categoryIndex];
+	if( categoryIndex == categoryIds.length ){ //all categories set: create the value
+		var model = currentValues.where(obj);
+		var cv = {}; 
+		if( model.length > 0 ){
+			obj = {};
+			cv = model[0].attributes;
+		}
+		_.each(metaData.metrics, function(m, id){
+			var currentValue = cv[id] || 0;  //protect against undefined
+			//constrain value updates to a maximum of 0.1 times the range - more realistic
+			var maxDelta = (m.max - m.min) * 0.1;
+			var min = Math.max(currentValue - maxDelta, m.min);
+			var max = min + (maxDelta << 1);
+			if( max > m.max ){
+				max = m.max;
+				min = m.max - (maxDelta << 1);
+			}
+			obj[id] = (Math.random() * (max - min)) + min;
+		});
+		if( model.length == 0 ){
+			currentValues.add( new Backbone.Model(obj) );
+		} else {
+			model[0].set(obj);
+		}
+	} else {
+		categoryIndex++;
+		_.each(metaData.categories[categoryId].values, function(value){
+			obj[categoryId] = value;
+			updateValues(categoryIndex, _.clone(obj));
+		});
+	}
+}
+	
+var updateInterval = 500;
+var updaterRunning = false;
+function valueUpdater(){
+	updateValues();
+	updaterRunning = updateInterval > 0;
+	if( updaterRunning ){
+		setTimeout(valueUpdater, updateInterval);
+	}
+}
+
+valueUpdater();
+
+$(function(){
+	//Add a slider so the user can control how frequently the data is updated
+	$('#updateInterval .slider').slider({
+		min: 0,
+		max: 10000,
+		step: 100,
+		value: updateInterval,
+		slide: function(event, ui){
+			$('#updateInterval .value').text(ui.value/1000);
+		},
+		stop: function(event, ui){
+			$('#updateInterval .value').text(ui.value/1000);
+			updateInterval = ui.value;
+			if( updateInterval > 0 && ! updaterRunning ){
+				valueUpdater();
+			}
+		}
+	});
+	
+	$('#updateInterval .value').text(updateInterval/1000);
+});
+
+//---------- Controller -------------
+
+//Generates unique IDs for the visualization elements
+var idSuffix = 0;
+function getUniqueId(){
+	idSuffix++;
+	return 'id_' + new Date().getTime() + '_' + idSuffix;
+}
+
+//Creates the base visualization element (container) - draggable, resizable, and closable
+function createVisualizationElement(container, size, position, resizableOptions){
+	resizableOptions = _.defaults(resizableOptions || {}, {
+		minHeight: 40
+	});
+	var element = $('<div class="visualization ui-corner-all">')
+		.attr('id', getUniqueId())
+		.css({
+			width: size.width,
+			height: size.height,
+			position: 'absolute',
+			top: Math.max(container.offset().top, position.top - (size.height/2)),
+			left: Math.max(container.offset().left, position.left - (size.width/2))
+		})
+		.draggable({containment: container[0]})
+		.resizable(resizableOptions)
+		.appendTo(container);
+
+	//clear the 'display' setting on the element so that the resize handle only shows on mouse-over
+	element.find('.ui-resizable-handle').css('display', '');
+	
+	$('<span class="close ui-icon ui-icon-circle-close">')
+		.appendTo(element)
+		.on('click', function(){
+			element.trigger("destroy").remove();
+		});
+	
+	return element;
+}
+
+//Creates a guage visualization and binds it to the appropriate model
+function createGuage(container, position){
+	var element = createVisualizationElement(
+			container,
+			{width: 120, height: 120},
+			position,
+			{aspectRatio: true}
+		);
+	element.addClass('gauge').removeClass('ui-corner-all').css('border', 'none');
+
+	var range = 100;
+	var config = {
+		size: 120,
+		label: '',
+		min: 0,
+		max: 100,
+		minorTicks: 5,
+		yellowZones: [{ from: 75, to: 90 }],
+		redZones: [{ from: 90, to: 100 }]
+	}
+	
+	var gauge = new Gauge(element.attr('id'), config);
+	gauge.render();
+	element.data('gauge', gauge);
+
+	var currentModel = undefined;
+	var currentMetric = undefined;
+	
+	function onChange(m){
+		gauge.redraw(m.get(currentMetric.id));
+	}
+	
+	function updateBinding(model, metric){
+		if( currentModel ){
+			currentModel.off('change:' + currentMetric.id, onChange);
+		}
+		var range = metric.max - metric.min;
+		var config = _.extend(gauge.config, {
+			label: metric.label,
+			min: metric.min,
+			max: metric.max,
+			minorTicks: Math.ceil((metric.max - metric.min) / 20),
+			yellowZones: [{ from: metric.min + range*0.75, to: metric.min + range*0.9 }],
+			redZones: [{ from: metric.min + range*0.9, to: metric.max }]
+		});
+		element.children('svg').remove();
+		gauge.configure(config);
+		gauge.render();
+		gauge.redraw(model.get(metric.id));
+		
+		model.on('change:' + metric.id, onChange);
+		
+		currentModel = model;
+		currentMetric = metric;
+	}
+
+	return {
+		bindToModelAndMetric : function (model, metric){
+			updateBinding(model, metric);
+			
+			element.on('resize', function(event, ui){
+				var size = Math.min(ui.size.width, ui.size.height);
+				if( gauge.config.size != size ){
+					gauge.config.size = size;
+					ui.element.children('svg').remove();
+					gauge.configure(gauge.config);
+					gauge.render();
+					gauge.redraw(currentModel.get(currentMetric.id));
+				}
+			}).on('destroy', function(){
+				currentModel.off('change:' + currentMetric.id, onChange);
+			}).on('dblclick', function(){
+				$('#configDialog').not(':visible').data('visualization', {
+					bindToModelAndMetric : updateBinding,
+					dispose : function(){}
+				}).dialog('option','title', 'Configure Gauge').dialog('open');
+			});
+		},
+		dispose : function(){
+			element.remove();
+		}
+	};
+}
+
+//Creates a line trace visualization and binds it to the appropriate model
+function createLinearTrace(container, position){
+	var size = {width: 480, height: 120};
+	var element = createVisualizationElement(container, size, position);
+	element.addClass('linearTrace');
+	
+	var lt = new LinearTrace(40, {min: 0, max: 100}, element, size);
+
+	element.data('lt', lt);
+	
+	var currentModel = undefined;
+	var currentMetric = undefined;
+	
+	function onChange(m){
+		lt.addDataPoint(m.get(currentMetric.id));
+	}
+	
+	function updateBinding(model, metric){
+		if( currentModel ){
+			currentModel.off('change:' + currentMetric.id, onChange);
+		}
+		currentModel = model;
+		currentMetric = metric;
+		
+		element.children('svg').remove();
+		lt = new LinearTrace(40, currentMetric, element, {width: element.width(), height: element.height()});
+		
+		currentModel.on('change:' + metric.id, onChange);
+	}
+	
+	return {
+		bindToModelAndMetric : function (model, metric){
+			updateBinding(model, metric);
+			
+			element.on('resize', function(event, ui){
+				lt.resize(ui.size.width, ui.size.height);
+			}).on('destroy', function(){
+				currentModel.off('change:' + currentMetric.id, onChange);
+			}).on('dblclick', function(){
+				$('#configDialog').not(':visible').data('visualization', {
+					bindToModelAndMetric : updateBinding,
+					dispose : function(){}
+				}).dialog('option','title', 'Configure Line Trace').dialog('open');
+			});
+		},
+		dispose : function(){
+			element.remove();
+		}
+	};
+}
+
+//Creates a Rosling plot and binds it to the appropriate model(s)
+function createRosling(container,position){
+	var size = {width: 400, height: 300};
+	var element = createVisualizationElement(container, size, position);
+	element.addClass('rosling');
+	var rosling = new Rosling(element,
+		metaData.metrics['m1'],
+		metaData.metrics['m2'],
+		metaData.metrics['m3'],
+		_.map(metaData.categories, function(c){ return c.id; })
+	);
+
+	function onChange(m){
+		rosling.updateDataPoint(m.attributes, updateInterval);
+	}
+	_.each(currentValues.models, function(model){
+		model.on('change', onChange)
+	});
+
+	function onAdd(model){
+		rosling.updateDataPoint(model.attributes);
+		model.on('change', onChange)
+	}
+	currentValues.on('add', onAdd);
+	currentValues.on('remove', function(model){
+		//TODO: add API to rosling to remove data point
+		model.off('change', onChange);
+	});
+	
+	element.on('resize', function(event, ui){
+		rosling.resize(ui.size.width, ui.size.height);
+	}).on('destroy', function(){
+		_.each(currentValues.models, function(model){
+			model.off('change', onChange)
+		});
+	}).on('dblclick', function(){
+		alert('Sorry. No configurable settings for rosling plots yet.');
+	});
+	
+
+	return element;
+}
+
+$(function(){
+	//Create the configuration dialog for gauges and line traces
+	var configDialog = $('#configDialog');
+	configDialog.dialog({
+		autoOpen: false,
+		buttons: {
+			"OK" : function(){
+				var categoryIndex = {};
+				_.each(metaData.categories, function(category){
+					categoryIndex[category.id] = $('#configDialog .' +'category_' + category.id ).val();
+				});
+				var matchingModels = currentValues.where(categoryIndex);
+				configDialog.data('visualization')
+					.bindToModelAndMetric(matchingModels[0],
+							metaData.metrics[$('#configDialog .metric').val()]);
+				configDialog.removeData('visualization');
+				configDialog.dialog('close');
+			},
+			"Cancel" : function(){
+				configDialog.dialog('close');
+			}
+		},
+		close : function(){
+			var vis = configDialog.data('visualization');
+			if( vis ){
+				vis.dispose();
+			}
+		}
+	});
+	
+	_.each(metaData.categories, function(category){
+		var select = $('<select>').addClass('category_' + category.id);
+		_.each(category.values, function(v){
+			$('<option>').attr('value', v).text(v).appendTo(select);
+		});
+		var tr = $('<tr>').appendTo('#configDialog table');
+		$('<th>').text(category.label + ":").appendTo(tr);
+		$('<td>').append(select).appendTo(tr);
+	});
+	
+	var select = $('<select class="metric">');
+	_.each(metaData.metrics, function(metric){
+		$('<option>').attr('value', metric.id).text(metric.label).appendTo(select);
+	});
+	configDialog.append( $('<span>').text('Metric: ') )
+		.append(select);
+	
+
+	//Make the visualization icons draggable
+	$('#visSelector .visIcon').draggable({
+		helper: 'clone',
+		revert: 'invalid'
+	});
+
+	//Add drop behavior to the canvas
+	$('#visualizations').droppable({
+		accept: '.visIcon',
+		drop: function(event, ui){
+			var categoryIndex = {};
+			_.each(metaData.categories, function(category){
+				categoryIndex[category.id] = $('#visSelector .' +'category_' + category.id ).val();
+			});
+			if( ui.draggable.is('.gauge') ){
+				configDialog.data('visualization', createGuage($('#visualizations'), ui.position))
+					.dialog('option', 'title', 'Configure Guage').dialog('open');
+			} else if(ui.draggable.is('.linearTrace')){
+				configDialog.data('visualization', createLinearTrace($('#visualizations'), ui.position))
+					.dialog('option', 'title', 'Configure Line Trace').dialog('open');
+			} else if(ui.draggable.is('.rosling')){
+				createRosling($('#visualizations'),ui.position);
+			}
+			
+			return true;
+		}
+	}).css({
+		height: $(window).height() - $('#visualizations').offset().top - 10
+	});
+	
+	$(window).on('resize', function(){
+		$('#visualizations').css({
+			height: $(window).height() - $('#visualizations').offset().top - 10
+		});
+	});
+})
+
+</script>
+</body>
+</html>
